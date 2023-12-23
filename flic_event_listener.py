@@ -16,11 +16,12 @@ def got_button(bd_addr):
     # Drop queued button click events
     cc.on_button_up_or_down = \
         lambda channel, click_type, was_queued, time_diff: \
-            print(channel.bd_addr + " " + str(click_type)) if not was_queued else None
+            print(channel.bd_addr + " " + str(click_type)) if time_diff < 20 else None
             
     cc.on_connection_status_changed = \
         lambda channel, connection_status, disconnect_reason: \
             print(channel.bd_addr + " " + str(connection_status) + (" " + str(disconnect_reason) if connection_status == fliclib.ConnectionStatus.Disconnected else ""))
+    
     client.add_connection_channel(cc)
 
 def got_info(items):
