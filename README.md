@@ -1,2 +1,2 @@
 # Flic service
-A simple server application to manage Flic button evens, and possibly some other IoT devices, too 🤷‍♂️
+A simple server application to manage [Flic Button](https://flic.io/flic2) events, and possibly some other IoT devices, too 🤷‍♂️
