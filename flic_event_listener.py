@@ -14,7 +14,7 @@ def got_button(bd_addr):
     cc = fliclib.ButtonConnectionChannel(bd_addr)
  
     # Drop queued button click events
-    cc.on_button_click = \
+    cc.on_button_up_or_down = \
         lambda channel, click_type, was_queued, time_diff: \
             print(channel.bd_addr + " " + str(click_type)) if not was_queued else None
             
