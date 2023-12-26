@@ -30,9 +30,9 @@ client = fliclib.FlicClient(server_ip)
 # If max time has been exceeded, the event is ignored.
 max_diff_time = 2
 
-# Click threshold in seconds. If the button is held down for more 
-# than this time, it is considered a hold event.
-click_threshold = 0.3
+# Click threshold in seconds. If the button is held down for less 
+# than this time, it is considered a click event.
+click_threshold = 0.6
 
 # Sleep time in seconds between each dim step.
 dim_step_sleep_time = 0.01
@@ -66,6 +66,7 @@ buttons["80:e4:da:7d:11:86"] = {
         
     ], 
     'click_count': 0,
+    "current_idx": 0,
     "is_held": False,
     "time_pressed": 0,
     "time_released": 0,
@@ -79,9 +80,7 @@ def make_post_request(action=None, payload=None):
     response = post(url=full_url, headers=ha_headers, data=payload)
     #print("RESP:\n" + response.text)
 
-def handle_button_event(channel, click_type, was_queued, time_diff):
-    #print(channel.bd_addr + " " + str(click_type) + (" (queued)" if was_queued else "") + " " + str(time_diff) + " seconds ago")
-    
+def handle_button_event(channel, click_type, was_queued, time_diff): 
     # Get the button's bd_addr.
     bd_addr = channel.bd_addr
     
@@ -99,17 +98,22 @@ def handle_button_event(channel, click_type, was_queued, time_diff):
         threading.Thread(target=check_button_hold, args=(bd_addr,)).start()
     
     # Handle release event
-    if click_type == fliclib.ClickType.ButtonUp:
-        buttons[bd_addr]["time_released"] = time.time()
-
-        buttons[bd_addr]["is_held"] = False
+    elif click_type == fliclib.ClickType.ButtonUp:
+        time_pressed = buttons[bd_addr]["time_pressed"]
+        time_released = time.time()
+        
         #print("Button up")
 
         # Determine if this was a click event.
-        if buttons[bd_addr]["time_released"] - buttons[bd_addr]["time_pressed"] < click_threshold:
-            # Reset button attributes before handling the click event.
-            reset_button_attributes(bd_addr)
+        if time_released - time_pressed < click_threshold:
             handle_click(bd_addr)
+        else:
+            # User released the button after holding it down.
+            #reset_button_attributes(bd_addr)
+            button = buttons[bd_addr]
+            button["is_held"] = False
+            button["time_pressed"] = 0
+            button["time_released"] = 0
             
 def reset_button_attributes(bd_addr):
     button = buttons[bd_addr]
@@ -119,14 +123,30 @@ def reset_button_attributes(bd_addr):
     button["brightness"] = 255
             
 def handle_click(bd_addr):
+    
     button = buttons[bd_addr]
     actions = button['click_payloads']
+    
+    # If the light is currently dimmed and user clicks the button,
+    # set the brightness to max but don't change to next color.
+    if buttons[bd_addr]["brightness"] < 255:
+        set_brightness_to_max(bd_addr)
+        reset_button_attributes(bd_addr)
+
+        return
+    
+    reset_button_attributes(bd_addr)
+
     click_count = button['click_count']
     action = actions[click_count]
     
     # Add brightness to the action
     action = action[:-1] + ', "brightness": ' + str(button['brightness']) + '}'
-
+    
+    # Store the current action index in the button's attributes.
+    button["current_idx"] = click_count
+    
+    # Send the action to the Home Assistant API.
     make_post_request(button['action_url'], action)
 
     # Increase the click count and reset it to 0 if it exceeds the number of actions.
@@ -134,16 +154,30 @@ def handle_click(bd_addr):
     
     button['click_count'] = click_count
 
+def set_brightness_to_max(bd_addr):
+    button = buttons[bd_addr]
+    actions = button['click_payloads']
+    current_action = actions[button['current_idx']]
+    buttons[bd_addr]["brightness"] = 255
+    current_action = current_action[:-1] + ', "brightness": ' + str(button['brightness']) + '}'
+    make_post_request(buttons[bd_addr]['action_url'], current_action)
+
 def check_button_hold(bd_addr):
     start_time = buttons[bd_addr]["time_pressed"]
     elapsed_time = time.time() - start_time
 
+    # Dim the lights while the button is held down.
     while buttons[bd_addr]["is_held"] and buttons[bd_addr]["brightness"] >= brightness_threshold_for_switch_off:
+        
+        # If the button is held down for more than the click threshold,
+        # dim the lights. No-op if the button is held down for less than.
         if (elapsed_time >= click_threshold):
             #print("Button held for " + str(elapsed_time) + " seconds")
             dim_lights(bd_addr)
             
         time.sleep(dim_step_sleep_time)
+        
+        # Increase the elapsed time cycle by cycle.
         elapsed_time = time.time() - start_time
     
     if buttons[bd_addr]["is_held"] and buttons[bd_addr]["brightness"] < brightness_threshold_for_switch_off:
@@ -151,17 +185,26 @@ def check_button_hold(bd_addr):
         make_post_request(buttons[bd_addr]["action_url_off"], '{"entity_id": "light.keittion_valot"}')
         
         # On next click, start from the current action.
-        buttons[bd_addr]['click_count'] = get_current_action_idx(bd_addr)
+        #buttons[bd_addr]['click_count'] = buttons[bd_addr]["current_idx"]
 
 def dim_lights(bd_addr):
     button = buttons[bd_addr]
-    brightness = button["brightness"] - dimming_step
-    #print("Dimming lights to " + str(brightness))
+    
+    # Dim the lights in the beginning of the hold event a
+    # bit more than the dimming step to make the dimming
+    # feel more responsive.
+    if button["brightness"] > 190:
+        brightness = button["brightness"] - (dimming_step + 8)
+    elif button["brightness"] > 130:
+        brightness = button["brightness"] - (dimming_step + 4)
+    else:
+        brightness = button["brightness"] - dimming_step
+
     button["brightness"] = brightness
     
     button = buttons[bd_addr]
     actions = button['click_payloads']
-    action = actions[get_current_action_idx(bd_addr)]
+    action = actions[button["current_idx"]]
     
     # Add brightness to the action
     action = action[:-1] + ', "brightness": ' + str(button['brightness']) + '}'
@@ -173,7 +216,8 @@ def get_current_action_idx(bd_addr):
     # If click_count is 0, the current action is the last one in the list.
     button = buttons[bd_addr]
     actions = button['click_payloads']
-    current_action_idx = button['click_count'] - 1 if button['click_count'] > 0 else len(actions) - 1
+    clicks = button['click_count']
+    current_action_idx = clicks - 1 if button['click_count'] > 0 else len(actions) - 1
     
     return current_action_idx
     
