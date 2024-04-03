@@ -30,24 +30,31 @@ client = fliclib.FlicClient(server_ip)
 # If max time has been exceeded, the event is ignored.
 max_diff_time = 2
 
-# Click threshold in seconds. If the button is held down for less 
-# than this time, it is considered a click event.
-click_threshold = 0.6
+# Hold event threshold in seconds.
+# If the button is held down for more than this time, it is considered a hold event. 
+# Otherwise, it is considered a click event.
+hold_event_threshold = 0.5
 
 # Sleep time in seconds between each dim step.
 dim_step_sleep_time = 0.01
 
-# Dimming step in brightness units.
+# Dimming step in brightness units (0-255).
 dimming_step = 5
 
-# Brightness threshold for switching the lights off.
-brightness_threshold_for_switch_off = 2
+# Brightness level for switching the lights off. Once the brightness level
+# reaches this level, the lights are switched off.
+brigthness_level_to_switch_off = 10
 
 # Create a structure for connected buttons.
 connected_buttons = {}
 
 # Create a structure for button actions and buttons' attributes.
 buttons = {}
+
+# Try this with Copilot for the button structure to make it cleaner:
+#
+# could you refactor this so that we would have a class to hold this information. This would allow me to create numerous instances with different light configurations.
+# Let's try to avoid repeating redundant information. Each button contains an ordered list of actions. An action consists of entity_id and a payload, e.g., '"color_temp_kelvin": 4400'. Adding to the list should take in those two elements. The list, however, should contain its elements in fully constructed YAML format. Create a function so that user would need to provide minimal amount of information.
 
 buttons["80:e4:da:7d:11:86"] = {
     'action_url': ha_light_switch_on_api_endpoint,
@@ -81,6 +88,18 @@ def make_post_request(action=None, payload=None):
     #print("RESP:\n" + response.text)
 
 def handle_button_event(channel, click_type, was_queued, time_diff): 
+    """
+    Handles button events and performs corresponding actions based on the event type.
+
+    Args:
+        channel (object): The button channel object.
+        click_type (int): The type of button click event.
+        was_queued (bool): Indicates if the event was queued.
+        time_diff (float): The time difference between the event and the previous event.
+
+    Returns:
+        None
+    """
     # Get the button's bd_addr.
     bd_addr = channel.bd_addr
     
@@ -105,7 +124,7 @@ def handle_button_event(channel, click_type, was_queued, time_diff):
         #print("Button up")
 
         # Determine if this was a click event.
-        if time_released - time_pressed < click_threshold:
+        if time_released - time_pressed < hold_event_threshold:
             handle_click(bd_addr)
         else:
             # User released the button after holding it down.
@@ -127,10 +146,13 @@ def handle_click(bd_addr):
     button = buttons[bd_addr]
     actions = button['click_payloads']
     
-    # If the light is currently dimmed and user clicks the button,
-    # set the brightness to max but don't change to next color.
+    # Has the light been dimmed when the button was clicked?
     if buttons[bd_addr]["brightness"] < 255:
-        set_brightness_to_max(bd_addr)
+        # If so, we will use current action with brightness set to 255.
+        current_action = actions[button['current_idx']]
+        buttons[bd_addr]["brightness"] = 255
+        current_action = current_action[:-1] + ', "brightness": ' + str(button['brightness']) + '}'
+        make_post_request(buttons[bd_addr]['action_url'], current_action)
         reset_button_attributes(bd_addr)
 
         return
@@ -154,24 +176,16 @@ def handle_click(bd_addr):
     
     button['click_count'] = click_count
 
-def set_brightness_to_max(bd_addr):
-    button = buttons[bd_addr]
-    actions = button['click_payloads']
-    current_action = actions[button['current_idx']]
-    buttons[bd_addr]["brightness"] = 255
-    current_action = current_action[:-1] + ', "brightness": ' + str(button['brightness']) + '}'
-    make_post_request(buttons[bd_addr]['action_url'], current_action)
-
 def check_button_hold(bd_addr):
     start_time = buttons[bd_addr]["time_pressed"]
     elapsed_time = time.time() - start_time
 
     # Dim the lights while the button is held down.
-    while buttons[bd_addr]["is_held"] and buttons[bd_addr]["brightness"] >= brightness_threshold_for_switch_off:
+    while buttons[bd_addr]["is_held"] and buttons[bd_addr]["brightness"] >= brigthness_level_to_switch_off:
         
         # If the button is held down for more than the click threshold,
         # dim the lights. No-op if the button is held down for less than.
-        if (elapsed_time >= click_threshold):
+        if (elapsed_time >= hold_event_threshold):
             #print("Button held for " + str(elapsed_time) + " seconds")
             dim_lights(bd_addr)
             
@@ -180,7 +194,7 @@ def check_button_hold(bd_addr):
         # Increase the elapsed time cycle by cycle.
         elapsed_time = time.time() - start_time
     
-    if buttons[bd_addr]["is_held"] and buttons[bd_addr]["brightness"] < brightness_threshold_for_switch_off:
+    if buttons[bd_addr]["is_held"] and buttons[bd_addr]["brightness"] < brigthness_level_to_switch_off:
         # TODO: entity id shouldn't be hardcoded
         make_post_request(buttons[bd_addr]["action_url_off"], '{"entity_id": "light.keittion_valot"}')
         
@@ -193,7 +207,9 @@ def dim_lights(bd_addr):
     # Dim the lights in the beginning of the hold event a
     # bit more than the dimming step to make the dimming
     # feel more responsive.
-    if button["brightness"] > 190:
+    if button["brightness"] > 220:
+        brightness = button["brightness"] - (dimming_step + 16)
+    elif button["brightness"] > 170:
         brightness = button["brightness"] - (dimming_step + 8)
     elif button["brightness"] > 130:
         brightness = button["brightness"] - (dimming_step + 4)
